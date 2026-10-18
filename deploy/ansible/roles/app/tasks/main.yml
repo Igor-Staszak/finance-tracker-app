@@ -1,0 +1,121 @@
+- name: App user
+  ansible.builtin.user:
+    name: "{{ finance_user }}"
+    system: true
+    home: "{{ finance_data_dir }}"
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Data directory (database + backups)
+  ansible.builtin.file:
+    path: "{{ finance_data_dir }}"
+    state: directory
+    owner: "{{ finance_user }}"
+    group: "{{ finance_user }}"
+    mode: "0700"
+
+- name: Config directory
+  ansible.builtin.file:
+    path: /etc/finance
+    state: directory
+    owner: root
+    group: "{{ finance_user }}"
+    mode: "0750"
+
+- name: Environment file
+  ansible.builtin.template:
+    src: finance.env.j2
+    dest: /etc/finance/finance.env
+    owner: root
+    group: "{{ finance_user }}"
+    mode: "0640"
+  notify: Restart finance
+
+- name: App directory, root-owned so the app cannot modify its own code
+  ansible.builtin.file:
+    path: "{{ finance_app_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Upload source code
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../../"
+    dest: "{{ finance_app_dir }}/"
+    delete: true
+    rsync_opts:
+      - "--omit-dir-times"
+      - "--chown=root:root"
+      - "--chmod=D755,F644"
+      - "--exclude=node_modules"
+      - "--exclude=web/dist"
+      - "--exclude=server/data"
+      - "--exclude=.env"
+      - "--exclude=.git"
+      - "--exclude=*.db*"
+      - "--exclude=/deploy"
+      - "--exclude=.ansible"
+      - "--exclude=.claude"
+  register: app_source
+
+- name: Check for a previous build
+  ansible.builtin.stat:
+    path: "{{ finance_app_dir }}/web/dist/index.html"
+  register: app_dist
+
+- name: Build
+  when: app_source.changed or not app_dist.stat.exists
+  block:
+    - name: Install server dependencies
+      ansible.builtin.command: npm ci --omit=dev --no-audit --no-fund --loglevel=error
+      args:
+        chdir: "{{ finance_app_dir }}/server"
+      changed_when: true
+
+    - name: Install web build dependencies
+      ansible.builtin.command: npm ci --no-audit --no-fund --loglevel=error
+      args:
+        chdir: "{{ finance_app_dir }}/web"
+      changed_when: true
+
+    - name: Build web app
+      ansible.builtin.command: npm run build
+      args:
+        chdir: "{{ finance_app_dir }}/web"
+      changed_when: true
+      notify: Restart finance
+
+    - name: Remove web build dependencies
+      ansible.builtin.file:
+        path: "{{ finance_app_dir }}/web/node_modules"
+        state: absent
+
+- name: Install systemd unit
+  ansible.builtin.template:
+    src: finance.service.j2
+    dest: /etc/systemd/system/finance.service
+    mode: "0644"
+  notify: Restart finance
+
+- name: Service enabled and running
+  ansible.builtin.systemd_service:
+    name: finance
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Backup script
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: /usr/local/bin/finance-backup
+    mode: "0755"
+
+- name: Daily backup at 03:15
+  ansible.builtin.cron:
+    name: finance backup
+    cron_file: finance-backup
+    user: "{{ finance_user }}"
+    minute: "15"
+    hour: "3"
+    job: /usr/local/bin/finance-backup

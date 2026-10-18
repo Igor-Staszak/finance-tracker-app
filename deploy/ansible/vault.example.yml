@@ -1,0 +1,7 @@
+# Template for group_vars/finance/vault.yml. To use:
+#   cp vault.example.yml group_vars/finance/vault.yml   # fill in your values
+#   ansible-vault encrypt group_vars/finance/vault.yml
+vault_server_ip: 203.0.113.10
+vault_ssh_user: ubuntu
+vault_finance_domain: 203-0-113-10.sslip.io
+vault_letsencrypt_email: ""

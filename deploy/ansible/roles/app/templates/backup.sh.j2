@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Managed by Ansible. Daily SQLite backup, run as {{ finance_user }} from /etc/cron.d/finance-backup
+set -euo pipefail
+DB={{ finance_data_dir }}/finance.db
+OUT={{ finance_data_dir }}/backups
+mkdir -p "$OUT"
+[ -f "$DB" ] || exit 0
+sqlite3 "$DB" ".backup '$OUT/finance-$(date +%F).db'"
+find "$OUT" -name 'finance-*.db' -mtime +{{ finance_backup_keep_days }} -delete

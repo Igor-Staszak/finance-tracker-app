@@ -1,0 +1,104 @@
+- name: Hide nginx version
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^\s*#?\s*server_tokens\s'
+    line: "\tserver_tokens off;"
+  notify: Reload nginx
+
+- name: Remove default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: ACME challenge directory
+  ansible.builtin.file:
+    path: /var/www/letsencrypt
+    state: directory
+    mode: "0755"
+
+- name: Check for the certificate
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ finance_domain }}/fullchain.pem"
+  register: web_cert
+
+- name: Get the first certificate
+  when: not web_cert.stat.exists
+  block:
+    - name: Temporary HTTP-only site for the ACME challenge
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-enabled/finance
+        mode: "0644"
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              location /.well-known/acme-challenge/ { root /var/www/letsencrypt; }
+              location / { return 404; }
+          }
+
+    - name: Load temporary site
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Request certificate from Let's Encrypt
+      ansible.builtin.command: >-
+        certbot certonly --webroot -w /var/www/letsencrypt -d {{ finance_domain }}
+        --agree-tos --non-interactive
+        {{ ('--email ' + letsencrypt_email) if letsencrypt_email else '--register-unsafely-without-email' }}
+      args:
+        creates: "/etc/letsencrypt/live/{{ finance_domain }}/fullchain.pem"
+
+    - name: Remove temporary site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/finance
+        state: absent
+
+- name: Reload nginx after certificate renewal
+  ansible.builtin.lineinfile:
+    path: /etc/letsencrypt/cli.ini
+    line: deploy-hook = systemctl reload nginx
+    create: true
+    mode: "0644"
+
+# The CSP allows the inline theme script in index.html by hash; compute it from the build.
+- name: Hash inline scripts for the Content-Security-Policy
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import re, hashlib, base64, sys
+        html = open(sys.argv[1], encoding="utf-8").read()
+        for s in re.findall(r"<script>(.*?)</script>", html, re.S):
+            print("'sha256-" + base64.b64encode(hashlib.sha256(s.encode()).digest()).decode() + "'")
+      - "{{ finance_app_dir }}/web/dist/index.html"
+  register: web_csp_hashes
+  changed_when: false
+  check_mode: false
+
+- name: Site config
+  ansible.builtin.template:
+    src: finance.conf.j2
+    dest: /etc/nginx/sites-available/finance
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Enable site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/finance
+    dest: /etc/nginx/sites-enabled/finance
+    state: link
+    force: true
+  notify: Reload nginx
+
+- name: Validate nginx config
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Start nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

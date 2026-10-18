@@ -1,0 +1,22 @@
+# Server identity comes from the encrypted vault.yml (see vault.example.yml).
+ansible_host: "{{ vault_server_ip }}"
+ansible_user: "{{ vault_ssh_user }}"
+
+# Public hostname. Without a domain, <ip-with-dashes>.sslip.io resolves to the server.
+finance_domain: "{{ vault_finance_domain }}"
+# Empty = register with Let's Encrypt without an email
+letsencrypt_email: "{{ vault_letsencrypt_email | default('') }}"
+
+finance_port: 3001
+finance_allow_registration: true
+finance_user: finance
+finance_app_dir: /opt/finance
+finance_data_dir: /var/lib/finance
+finance_backup_keep_days: 30
+# Other apps served on the same domain (under their own path) drop an nginx snippet here; the finance site
+# includes them, so deploying finance doesn't cut them off. A listed file that doesn't exist is skipped.
+nginx_extra_includes:
+  - /etc/nginx/snippets/ships-game.conf
+
+ssh_allow_users: ["{{ vault_ssh_user }}"]
+auto_reboot_time: "04:30"

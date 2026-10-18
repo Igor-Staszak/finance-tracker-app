@@ -1,0 +1,81 @@
+# Managed by Ansible
+limit_req_zone $binary_remote_addr zone=finance_auth:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=finance_api:10m rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=finance_conn:10m;
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    location /.well-known/acme-challenge/ { root /var/www/letsencrypt; }
+    location / { return 301 https://{{ finance_domain }}$request_uri; }
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
+    server_name {{ finance_domain }};
+
+    ssl_certificate     /etc/letsencrypt/live/{{ finance_domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ finance_domain }}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Wrong Host header (e.g. https://<ip>) -> canonical name
+    if ($host != "{{ finance_domain }}") { return 301 https://{{ finance_domain }}$request_uri; }
+
+    client_max_body_size 6m;
+    limit_conn finance_conn 30;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' {{ web_csp_hashes.stdout_lines | join(' ') }}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" always;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_hide_header X-Powered-By;
+
+    # the app lives under /finance-tracker/ (BASE_PATH in server/src/index.js)
+    location ~ ^/finance-tracker/api/(login|register)$ {
+        limit_req zone=finance_auth burst=10 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:{{ finance_port }};
+    }
+    location /finance-tracker/api/ {
+        limit_req zone=finance_api burst=60 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:{{ finance_port }};
+    }
+    location /finance-tracker/ {
+        proxy_pass http://127.0.0.1:{{ finance_port }};
+    }
+    location = /finance-tracker { return 301 /finance-tracker/; }
+
+    # Phones that installed the app when it lived at / still run its old service worker. When it checks
+    # /sw.js for updates it gets this one, which removes itself and reloads the page (-> redirect below).
+    location = /sw.js {
+        default_type application/javascript;
+        add_header Cache-Control "no-store" always;
+        return 200 "self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('activate', (e) => e.waitUntil(self.registration.unregister().then(() => self.clients.matchAll({ type: 'window' })).then((cs) => cs.forEach((c) => c.navigate(c.url)))));";
+    }
+    # other apps on this domain (nginx_extra_includes in group_vars)
+{% for inc in nginx_extra_includes | default([]) %}
+    include {{ inc }}*;
+{% endfor %}
+
+    location / {
+        return 302 /finance-tracker/;
+    }
+}

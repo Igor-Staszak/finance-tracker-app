@@ -1,0 +1,11 @@
+# Full server setup + app deploy.
+#   ansible-playbook site.yml               everything
+#   ansible-playbook site.yml --tags app    only push code, rebuild, restart
+- name: Finance tracker server
+  hosts: finance
+  become: true
+  roles:
+    - { role: base, tags: [base] }
+    - { role: hardening, tags: [hardening] }
+    - { role: app, tags: [app] }
+    - { role: web, tags: [web, app] }

@@ -1,0 +1,12 @@
+node_modules/
+web/dist/
+server/data/
+*.db
+*.db-*
+.env
+
+# Ansible: local cache, vault password, and the real server details (encrypted, but private;
+# copy deploy/ansible/vault.example.yml to create your own)
+.ansible/
+*vault-pass*
+deploy/ansible/group_vars/finance/vault.yml
